@@ -40,15 +40,73 @@ def ingest() -> None:
 @click.option("--max", "max_records", type=int, default=200, show_default=True)
 @click.option("--mailto", required=True, help="Polite-pool contact email.")
 @click.option("--out", "output", required=True, type=click.Path(dir_okay=False))
-def ingest_openalex(query: str, max_records: int, mailto: str, output: str) -> None:
+@click.option(
+    "--filter",
+    "-f",
+    "filter_args",
+    multiple=True,
+    help="KEY=VALUE (repeatable), e.g. -f from_publication_date=2015-01-01 -f type=article|preprint",
+)
+@click.option(
+    "--select",
+    default=None,
+    help="Comma-separated OpenAlex response fields. Defaults to a screening-oriented field set.",
+)
+@click.option("--per-page", type=int, default=100, show_default=True)
+@click.option("--api-key", default=None, envvar="OPENALEX_API_KEY", help="Optional premium-tier API key.")
+@click.option(
+    "--cache-dir",
+    default=None,
+    type=click.Path(file_okay=False),
+    help="Cache raw pages as JSON Lines here for reproducibility and resumability. "
+    "Defaults to a .ingest-cache directory next to --out.",
+)
+@click.option("--no-cache", is_flag=True, help="Disable caching entirely.")
+@click.option("--query-id", default=None, help="Stable cache key. Derived from the query shape if omitted.")
+@click.option("--force", is_flag=True, help="Ignore any existing cache and re-fetch from scratch.")
+def ingest_openalex(
+    query: str,
+    max_records: int,
+    mailto: str,
+    output: str,
+    filter_args: tuple[str, ...],
+    select: str | None,
+    per_page: int,
+    api_key: str | None,
+    cache_dir: str | None,
+    no_cache: bool,
+    query_id: str | None,
+    force: bool,
+) -> None:
     """Search OpenAlex and write a RIS corpus."""
-    from prisma.ingest.openalex import openalex_search, work_to_ris
+    from prisma.ingest.openalex import DEFAULT_SELECT, openalex_search, work_to_ris
+
+    filters: dict[str, str] = {}
+    for arg in filter_args:
+        if "=" not in arg:
+            raise click.UsageError(f"Filter must be KEY=VALUE, got: {arg}")
+        key, value = arg.split("=", 1)
+        filters[key] = value
 
     out = Path(output)
     out.parent.mkdir(parents=True, exist_ok=True)
+
+    resolved_cache_dir = None if no_cache else (Path(cache_dir) if cache_dir else out.parent / ".ingest-cache")
+
     n = 0
     with open(out, "w", encoding="utf-8") as f:
-        for w in openalex_search(query, mailto=mailto, max_records=max_records):
+        for w in openalex_search(
+            query,
+            mailto=mailto,
+            per_page=per_page,
+            max_records=max_records,
+            filters=filters or None,
+            select=select or DEFAULT_SELECT,
+            api_key=api_key,
+            cache_dir=resolved_cache_dir,
+            query_id=query_id,
+            force=force,
+        ):
             f.write(work_to_ris(w))
             n += 1
     click.echo(f"Wrote {n} records to {out}")

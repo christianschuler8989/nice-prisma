@@ -1,88 +1,390 @@
 """OpenAlex API client for corpus building.
 
 OpenAlex is open access, no API key required. A polite email is recommended
-via the `mailto` parameter to be moved into the polite pool (faster + more
-reliable). See https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication.
+via the `mailto` parameter (and the User-Agent header) to be moved into the
+polite pool (faster + more reliable rate limits). See
+https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication.
+
+Every search is treated as an immutable research artifact: when `cache_dir`
+is given, each page is appended to a JSON Lines file as soon as it is
+fetched, and a metadata sidecar records the query spec, filters, select
+fields, cursor, and retrieval timestamps. A rerun with the same `query_id`
+resumes from the stored cursor instead of re-fetching, and a completed query
+is served straight from the cache. This matters because OpenAlex search
+results can change as records are added, merged, or reindexed, so the raw
+response captured at retrieval time is the reproducible record of what the
+review actually screened.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import random
+import re
 import time
 from collections.abc import Iterator
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-OPENALEX_BASE = "https://api.openalex.org/works"
+from prisma import __version__
+from prisma.ingest.ris_io import normalize_doi
+
+OPENALEX_WORKS = "https://api.openalex.org/works"
+
+# A good default for screening tables: enough to build the corpus and
+# convert to RIS without pulling every nested field OpenAlex can return.
+DEFAULT_SELECT = (
+    "id,doi,title,publication_year,publication_date,type,language,"
+    "authorships,primary_location,open_access,abstract_inverted_index,"
+    "cited_by_count,referenced_works_count,keywords"
+)
+
+# OpenAlex work `type` -> RIS `TY` tag. Falls back to "GEN" (generic) for
+# anything unmapped, rather than mislabelling everything as a journal
+# article.
+_TYPE_TO_RIS = {
+    "article": "JOUR",
+    "review": "JOUR",
+    "letter": "JOUR",
+    "editorial": "JOUR",
+    "erratum": "JOUR",
+    "preprint": "UNPB",
+    "book": "BOOK",
+    "book-chapter": "CHAP",
+    "monograph": "BOOK",
+    "reference-entry": "CHAP",
+    "dissertation": "THES",
+    "report": "RPRT",
+    "dataset": "DATA",
+    "paratext": "GEN",
+    "supplementary-materials": "GEN",
+    "peer-review": "GEN",
+    "standard": "STAND",
+    "grant": "GEN",
+    "other": "GEN",
+}
+
+logger = logging.getLogger(__name__)
+
+
+class OpenAlexError(RuntimeError):
+    """Raised when an OpenAlex request fails after all retries."""
+
+
+def make_session(mailto: str, api_key: str | None = None) -> requests.Session:
+    """Build a session with retry/backoff and polite-pool identification.
+
+    A single connection pool (`pool_maxsize=1`) keeps requests sequential by
+    construction: this client is not meant to be used concurrently from
+    multiple threads.
+    """
+    session = requests.Session()
+
+    retry = Retry(
+        total=5,
+        connect=5,
+        read=5,
+        status=5,
+        backoff_factor=2,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=1, pool_maxsize=1)
+    session.mount("https://", adapter)
+
+    headers = {
+        "User-Agent": f"proportione-prisma/{__version__} (mailto:{mailto})",
+        "Accept": "application/json",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    session.headers.update(headers)
+    return session
+
+
+def _validate_filters(filters: dict[str, str]) -> None:
+    for key, value in filters.items():
+        or_values = str(value).split("|")
+        if len(or_values) > 100:
+            raise ValueError(
+                f"filter {key!r} has {len(or_values)} OR-separated values; "
+                "OpenAlex allows at most 100 per filter"
+            )
+
+
+def _slugify(text: str, max_len: int = 40) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug[:max_len] or "query"
+
+
+def _canonical_query_id(
+    query: str,
+    filters: dict[str, str] | None,
+    select: str | None,
+    per_page: int,
+) -> str:
+    """Derive a stable, filesystem-safe id from the query shape.
+
+    Used as the default cache key so that re-running the same search reuses
+    the same cache directory, while a materially different search (a
+    different filter, a different select) gets its own directory instead of
+    silently mixing pages from two different queries.
+    """
+    canonical = json.dumps(
+        {"query": query, "filters": filters or {}, "select": select, "per_page": per_page},
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:10]
+    return f"{_slugify(query)}_{digest}"
+
+
+def _append_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _read_jsonl(path: Path) -> Iterator[dict[str, Any]]:
+    if not path.exists():
+        return
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
+
+
+def _load_meta(meta_path: Path) -> dict[str, Any] | None:
+    if not meta_path.exists():
+        return None
+    with meta_path.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _write_meta(meta_path: Path, meta: dict[str, Any]) -> None:
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    with meta_path.open("w", encoding="utf-8") as handle:
+        json.dump(meta, handle, indent=2, sort_keys=True)
 
 
 def openalex_search(
     query: str,
+    *,
+    mailto: str,
     per_page: int = 100,
     max_records: int | None = None,
-    mailto: str | None = None,
     filters: dict[str, str] | None = None,
-    sleep: float = 0.1,
+    select: str | None = DEFAULT_SELECT,
+    api_key: str | None = None,
+    request_pause: float = 0.25,
+    cache_dir: str | Path | None = None,
+    query_id: str | None = None,
+    force: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """Yield works matching `query` from OpenAlex, page by page.
 
     Args:
-        query: full-text search expression (passed to `search` parameter).
-        per_page: 1..200, OpenAlex max is 200.
+        query: full-text search expression (passed to `search`).
+        mailto: contact email; required for the polite pool and sent both
+            as a query parameter and in the User-Agent header.
+        per_page: 1..200 (OpenAlex's hard limit); the recommended default
+            is 100.
         max_records: stop after this many records (None = all).
-        mailto: contact email for the polite pool.
-        filters: extra OpenAlex filters, e.g. `{"from_publication_date": "2015-01-01"}`.
-        sleep: seconds between page requests.
+        filters: OpenAlex filters, e.g. `{"from_publication_date": "2015-01-01"}`.
+            OR-values within one filter (`"article|preprint"`) are capped
+            at 100 per OpenAlex's documented limit.
+        select: comma-separated response fields; `None` returns full
+            records. Defaults to a screening-oriented field set.
+        api_key: optional OpenAlex API key (premium tier), sent as a bearer
+            token. Not required for standard access.
+        request_pause: base seconds to sleep between pages, plus jitter, so
+            repeated scheduled runs do not synchronize.
+        cache_dir: when given, every fetched page is appended to
+            `<cache_dir>/<query_id>/records.jsonl` immediately, and a
+            `meta.json` sidecar records the query spec and cursor. A
+            completed query is served from the cache without hitting the
+            network; an interrupted one resumes from its last cursor.
+        query_id: cache key; derived from the query/filters/select/per_page
+            when omitted, so identical searches share a cache directory.
+        force: ignore an existing cache and re-fetch from scratch.
     """
-    cursor = "*"
-    fetched = 0
+    if not query.strip():
+        raise ValueError("query must not be empty")
+    if not mailto.strip():
+        raise ValueError("mailto must not be empty")
+    if not 1 <= per_page <= 200:
+        raise ValueError("per_page must be between 1 and 200")
+    if filters:
+        _validate_filters(filters)
+
+    cache_path: Path | None = None
+    records_path: Path | None = None
+    meta_path: Path | None = None
+    meta: dict[str, Any] | None = None
+
+    if cache_dir is not None:
+        resolved_id = query_id or _canonical_query_id(query, filters, select, per_page)
+        cache_path = Path(cache_dir) / resolved_id
+        records_path = cache_path / "records.jsonl"
+        meta_path = cache_path / "meta.json"
+        meta = None if force else _load_meta(meta_path)
+
+        if meta is not None and meta.get("status") == "complete":
+            logger.info("Serving %d cached records for query_id=%s", meta["fetched"], resolved_id)
+            fetched = 0
+            for record in _read_jsonl(records_path):
+                yield record
+                fetched += 1
+                if max_records is not None and fetched >= max_records:
+                    return
+            return
+
+        if force and records_path.exists():
+            records_path.unlink()
+
+        if meta is None:
+            meta = {
+                "query_id": resolved_id,
+                "query": query,
+                "filters": filters or {},
+                "select": select,
+                "per_page": per_page,
+                "script_version": __version__,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "cursor": "*",
+                "fetched": 0,
+                "status": "in_progress",
+            }
+            _write_meta(meta_path, meta)
+
+    cursor = meta["cursor"] if meta else "*"
+    fetched = meta["fetched"] if meta else 0
+
+    session = make_session(mailto, api_key=api_key)
     params: dict[str, str | int] = {
         "search": query,
-        "per_page": min(per_page, 200),
-        "cursor": cursor,
+        "per_page": per_page,
+        "mailto": mailto,
     }
-    if mailto:
-        params["mailto"] = mailto
     if filters:
         params["filter"] = ",".join(f"{k}:{v}" for k, v in filters.items())
+    if select:
+        params["select"] = select
 
-    while True:
-        params["cursor"] = cursor
-        r = requests.get(OPENALEX_BASE, params=params, timeout=30)
-        r.raise_for_status()
-        payload = r.json()
-        works = payload.get("results", [])
-        if not works:
-            break
-        for w in works:
-            yield w
-            fetched += 1
-            if max_records is not None and fetched >= max_records:
-                return
-        cursor = payload.get("meta", {}).get("next_cursor")
-        if not cursor:
-            break
-        time.sleep(sleep)
+    manual_429_retries = 0
+    max_manual_429_retries = 5
+
+    try:
+        while cursor:
+            params["cursor"] = cursor
+            response = session.get(OPENALEX_WORKS, params=params, timeout=(10, 60))
+
+            if response.status_code == 429:
+                manual_429_retries += 1
+                if manual_429_retries > max_manual_429_retries:
+                    raise OpenAlexError(
+                        f"OpenAlex kept returning 429 after {max_manual_429_retries} "
+                        "manual retries (transport-level retries already exhausted)"
+                    )
+                retry_after = response.headers.get("Retry-After")
+                delay = float(retry_after) if retry_after else 10.0
+                logger.warning("Rate limited; sleeping for %.1f seconds", delay)
+                time.sleep(delay)
+                continue
+            manual_429_retries = 0
+
+            response.raise_for_status()
+            payload = response.json()
+
+            logger.info(
+                "OpenAlex request: cost=%s remaining=%s total_results=%s",
+                response.headers.get("X-RateLimit-Credits-Used"),
+                response.headers.get("X-RateLimit-Remaining"),
+                payload.get("meta", {}).get("count"),
+            )
+
+            results = payload.get("results", [])
+            if results and records_path is not None:
+                _append_jsonl(records_path, results)
+
+            for work in results:
+                yield work
+                fetched += 1
+                if max_records is not None and fetched >= max_records:
+                    if meta_path is not None:
+                        meta["fetched"] = fetched
+                        meta["cursor"] = cursor
+                        meta["status"] = "in_progress"
+                        _write_meta(meta_path, meta)
+                    return
+
+            cursor = payload.get("meta", {}).get("next_cursor")
+
+            if meta_path is not None:
+                meta["fetched"] = fetched
+                meta["cursor"] = cursor or ""
+                meta["status"] = "complete" if not cursor else "in_progress"
+                meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+                _write_meta(meta_path, meta)
+
+            if not results or not cursor:
+                break
+
+            time.sleep(request_pause + random.uniform(0, 0.15))
+    finally:
+        session.close()
+
+
+def _reconstruct_abstract(inverted_index: dict[str, list[int]] | None) -> str:
+    """OpenAlex stores abstracts as an inverted index for licensing reasons.
+
+    Defensive against malformed data: non-list position values and
+    non-integer positions for a word are skipped rather than raising, since
+    an absent/broken abstract here just means OpenAlex didn't provide a
+    clean one for this record, not that the whole ingest should fail.
+    """
+    if not inverted_index:
+        return ""
+    positions: list[tuple[int, str]] = []
+    for word, idxs in inverted_index.items():
+        if not isinstance(idxs, list):
+            continue
+        for i in idxs:
+            if isinstance(i, int):
+                positions.append((i, word))
+    positions.sort()
+    return " ".join(word for _, word in positions)
 
 
 def work_to_ris(work: dict[str, Any]) -> str:
     """Convert one OpenAlex work to a RIS record."""
     title = (work.get("title") or "").replace("\n", " ").strip()
     year = str(work.get("publication_year") or "")
-    doi_url = work.get("doi") or ""
-    doi = doi_url.replace("https://doi.org/", "") if doi_url else ""
+    full_date = work.get("publication_date") or ""
+    doi = normalize_doi(work.get("doi") or "")
     abstract = _reconstruct_abstract(work.get("abstract_inverted_index"))
-    journal = ""
     primary = work.get("primary_location") or {}
     src = primary.get("source") or {}
     journal = src.get("display_name") or ""
+    ris_type = _TYPE_TO_RIS.get(work.get("type") or "", "GEN")
 
-    lines = ["TY  - JOUR", f"TI  - {title}"]
+    lines = [f"TY  - {ris_type}", f"TI  - {title}"]
     for au in work.get("authorships", [])[:50]:
         name = (au.get("author") or {}).get("display_name")
         if name:
             lines.append(f"AU  - {name}")
     if year:
         lines.append(f"PY  - {year}")
+    if full_date:
+        lines.append(f"DA  - {full_date}")
     if journal:
         lines.append(f"JO  - {journal}")
     if doi:
@@ -93,17 +395,9 @@ def work_to_ris(work: dict[str, Any]) -> str:
             lines.append(f"KW  - {kw_text}")
     if abstract:
         lines.append(f"AB  - {abstract}")
+    openalex_id = work.get("id")
+    if openalex_id:
+        lines.append(f"N1  - openalex:{openalex_id}")
     lines.append("ER  - ")
     lines.append("")
     return "\n".join(lines)
-
-
-def _reconstruct_abstract(inverted_index: dict[str, list[int]] | None) -> str:
-    """OpenAlex stores abstracts as an inverted index for licensing reasons."""
-    if not inverted_index:
-        return ""
-    positions: list[tuple[int, str]] = []
-    for word, idxs in inverted_index.items():
-        positions.extend((i, word) for i in idxs)
-    positions.sort()
-    return " ".join(word for _, word in positions)
