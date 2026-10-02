@@ -134,7 +134,7 @@ def mixed_model_icc(df: pd.DataFrame, outcome: str, predictor: str, group: str) 
         import statsmodels.formula.api as smf
     except ImportError as exc:  # pragma: no cover
         raise ImportError(
-            "mixed_model_icc requires statsmodels: pip install 'proportione-prisma[stats]'"
+            "mixed_model_icc requires statsmodels: pip install -e '.[stats]'"
         ) from exc
     d = df[[outcome, predictor, group]].apply(
         lambda c: pd.to_numeric(c, errors="coerce") if c.name != group else c

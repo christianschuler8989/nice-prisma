@@ -10,21 +10,21 @@ from prisma.extraction.patterns import extract_record, load_taxonomy
 from prisma.extraction.pdf_text import extract_pdf_text
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-DEMO_TAXONOMY = REPO_ROOT / "examples" / "extraction_taxonomy_signal_kpi.yaml"
+DEMO_TAXONOMY = REPO_ROOT / "examples" / "kurdish" / "extraction_taxonomy.yaml"
 
+# Synthetic text written for this demo. It is not taken from a real publication.
 DEMO_TEXT = """
-Abstract. The aim of this study is to forecast monthly hotel revenue per
-available room (RevPAR) in Spain using Google Trends search volume.
+Abstract. We present a parallel corpus for machine translation between
+Kurmanji and Sorani, the two most widely spoken Kurdish dialects.
 
-Methodology. We collected weekly Google Trends data for tourism-related
-queries in Spain from 2010 to 2022. The dependent variable is hotel revenue
-from the National Statistics Institute. We employ an ARIMA-X regression
-model with train/test split.
+Methodology. Sentences were collected from news websites. The Sorani side
+is written in the Arabic-based script and was transliterated for
+alignment, the Kurmanji side uses the Latin alphabet. A part-of-speech
+tagger and a bilingual lexicon support the alignment step.
 
-Results. The coefficient on Google Trends search volume is positive and
-statistically significant (p < 0.001), with R² = 0.84. Our findings
-suggest a positive effect of digital signals on tourist demand
-forecasting. TripAdvisor reviews provide secondary information.
+Results. A baseline machine translation system trained on the corpus
+outperforms dictionary lookup in both directions. The corpus and the
+lexicon are released for further work on Kurdish language processing.
 """
 
 st.set_page_config(page_title="Extraction — PRISMA", page_icon="📄", layout="wide")
@@ -37,7 +37,7 @@ st.write(
 
 with st.sidebar:
     st.subheader("Inputs")
-    use_demo_taxonomy = st.toggle("Use demo taxonomy (Signal-KPI)", value=True)
+    use_demo_taxonomy = st.toggle("Use demo taxonomy (Kurdish example)", value=True)
     if use_demo_taxonomy:
         taxonomy_file: Path | None = DEMO_TAXONOMY
     else:

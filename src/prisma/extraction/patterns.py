@@ -5,8 +5,8 @@ the engine scans the text and returns the highest-priority label whose pattern
 matched, plus the offset and snippet for traceability.
 
 Taxonomies are YAML files in `examples/` so any domain can be expressed
-without code changes. See `examples/taxonomies/signal_kpi.yaml` for the
-Signal-KPI taxonomy used in Cuervo & Marques (2026).
+without code changes. See `examples/kurdish/extraction_taxonomy.yaml` for
+the taxonomy of the Kurdish example survey.
 """
 from __future__ import annotations
 

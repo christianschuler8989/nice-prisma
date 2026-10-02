@@ -1,4 +1,4 @@
-"""PRISMA CLI — `prisma <command>`.
+"""nice-prisma CLI, invoked as `prisma <command>`.
 
 Subcommands
 -----------
@@ -7,6 +7,10 @@ Subcommands
 - screen            Apply a YAML rule set to a RIS corpus.
 - extract           Extract fields from PDFs using a YAML taxonomy.
 - quality           MMAT 2018 quality assessment from PDF text.
+- tracking retrieval           Link retrieved PDFs to registry doc_ids.
+- tracking eligibility-template  Generate a full-text review CSV template.
+- tracking eligibility-apply    Fold a filled-in review template back into the registry.
+- tracking counts               Derive a PRISMACounts JSON straight from the registry.
 - report            Render a PRISMA 2020 flow diagram from a JSON counts file.
 - correlate         Pearson (+Fisher-z CI) and Spearman correlations, overall/per stratum.
 """
@@ -24,9 +28,9 @@ from prisma import __version__
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(__version__, prog_name="prisma")
 def main() -> None:
-    """PRISMA — a research transparency toolkit by Proportione, LDA.
+    """nice-prisma, a service-friendly toolkit for PRISMA-based literature surveys.
 
-    https://github.com/Proportione/prisma
+    https://github.com/christianschuler8989/nice-prisma
     """
 
 
@@ -59,7 +63,8 @@ def ingest() -> None:
     default=None,
     type=click.Path(file_okay=False),
     help="Cache raw pages as JSON Lines here for reproducibility and resumability. "
-    "Defaults to a .ingest-cache directory next to --out.",
+    "Defaults to a .ingest-cache directory next to --out. Use data/library/openalex "
+    "to share the cache across surveys.",
 )
 @click.option("--no-cache", is_flag=True, help="Disable caching entirely.")
 @click.option("--query-id", default=None, help="Stable cache key. Derived from the query shape if omitted.")
@@ -93,8 +98,11 @@ def ingest_openalex(
 
     resolved_cache_dir = None if no_cache else (Path(cache_dir) if cache_dir else out.parent / ".ingest-cache")
 
+    # Written to a .part file first, so a failed search never replaces an
+    # existing RIS file with a truncated one.
+    part = out.with_name(out.name + ".part")
     n = 0
-    with open(out, "w", encoding="utf-8") as f:
+    with open(part, "w", encoding="utf-8") as f:
         for w in openalex_search(
             query,
             mailto=mailto,
@@ -109,6 +117,7 @@ def ingest_openalex(
         ):
             f.write(work_to_ris(w))
             n += 1
+    part.replace(out)
     click.echo(f"Wrote {n} records to {out}")
 
 
@@ -147,16 +156,31 @@ def ingest_dedup(sources: tuple[str, ...], output_dir: str, basename: str, thres
 @click.option("--in", "ris_path", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--rules", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--out", "output_dir", required=True, type=click.Path(file_okay=False))
-def screen(ris_path: str, rules: str, output_dir: str) -> None:
+@click.option(
+    "--registry",
+    default=None,
+    type=click.Path(dir_okay=False),
+    help="Tracking registry to update with screening decisions (from `ingest dedup`'s "
+    "<basename>-registry.jsonl). Skipped if omitted.",
+)
+def screen(ris_path: str, rules: str, output_dir: str, registry: str | None) -> None:
     """Title-abstract screening with a YAML rule set."""
     from collections import Counter
 
-    from prisma.screening.engine import load_rules, screen_records
+    from prisma.screening.engine import apply_to_registry, load_rules, screen_records
 
     ruleset = load_rules(rules)
     results = screen_records(ris_path, ruleset, output_dir=output_dir)
     tally = Counter(r.decision.value for r in results)
     click.echo(f"Total: {len(results)} | " + " | ".join(f"{k}: {v}" for k, v in tally.items()))
+
+    if registry:
+        from prisma.tracking.registry import Registry
+
+        reg = Registry.load(registry)
+        apply_to_registry(results, reg)
+        reg.save(registry)
+        click.echo(f"Updated {len(results)} entries in {registry}")
 
 
 @main.command()
@@ -170,18 +194,20 @@ def extract(pdfs: str, taxonomy: str, output_csv: str, max_pages: int) -> None:
 
     from prisma.extraction.patterns import extract_record, load_taxonomy
     from prisma.extraction.pdf_text import extract_pdf_text, iter_pdfs
+    from prisma.ingest.identity import doc_id_from_filename
 
     tax = load_taxonomy(taxonomy)
     out = Path(output_csv)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    fieldnames = ["pdf", *tax.fields.keys()]
+    fieldnames = ["doc_id", "pdf", *tax.fields.keys()]
     rows: list[dict] = []
     for p in iter_pdfs(pdfs):
         pages = extract_pdf_text(p, max_pages=max_pages)
         text = "\n".join(pg.text for pg in pages)
         rec = extract_record(text, tax)
         rec.pop("_audit", None)
+        rec["doc_id"] = doc_id_from_filename(p.name)
         rec["pdf"] = p.name
         for k, v in list(rec.items()):
             if isinstance(v, list):
@@ -204,6 +230,7 @@ def quality(pdfs: str, output_csv: str, max_pages: int) -> None:
     import csv
 
     from prisma.extraction.pdf_text import extract_pdf_text, iter_pdfs
+    from prisma.ingest.identity import doc_id_from_filename
     from prisma.quality.mmat import assess_text
 
     out = Path(output_csv)
@@ -214,7 +241,7 @@ def quality(pdfs: str, output_csv: str, max_pages: int) -> None:
         pages = extract_pdf_text(p, max_pages=max_pages)
         text = "\n".join(pg.text for pg in pages)
         a = assess_text(p.name, text)
-        row = {"pdf": p.name, "total": a.total, "level": a.level.value}
+        row = {"doc_id": doc_id_from_filename(p.name), "pdf": p.name, "total": a.total, "level": a.level.value}
         row.update({code: score.value for code, score in a.scores.items()})
         rows.append(row)
 
@@ -227,6 +254,98 @@ def quality(pdfs: str, output_csv: str, max_pages: int) -> None:
         w.writeheader()
         w.writerows(rows)
     click.echo(f"Assessed {len(rows)} PDFs → {out}")
+
+
+@main.group()
+def tracking() -> None:
+    """Join PDFs, screening, and eligibility to registry doc_ids; derive counts."""
+
+
+@tracking.command("retrieval")
+@click.option("--registry", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--pdfs", required=True, type=click.Path(exists=True, file_okay=False))
+@click.option(
+    "--manifest",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Optional doc_id,pdf CSV for PDFs that can't follow the doc_id filename convention.",
+)
+def tracking_retrieval(registry: str, pdfs: str, manifest: str | None) -> None:
+    """Match retrieved PDFs to registry doc_ids and update the registry."""
+    from prisma.tracking.registry import Registry
+    from prisma.tracking.retrieval import link_retrieval, load_manifest
+
+    reg = Registry.load(registry)
+    manifest_map = load_manifest(manifest) if manifest else None
+    result = link_retrieval(reg, pdfs, manifest=manifest_map)
+    reg.save(registry)
+
+    click.echo(
+        f"Retrieved: {len(result.matched)} | Not retrieved: {len(result.not_retrieved)} | "
+        f"Not sought (excluded at screening): {len(result.not_sought)}"
+    )
+    if result.not_sought_pdfs:
+        click.echo(
+            f"Warning: {len(result.not_sought_pdfs)} PDFs belong to a doc_id excluded at screening:",
+            err=True,
+        )
+        for pdf in result.not_sought_pdfs[:20]:
+            click.echo(f"  {pdf}", err=True)
+    if result.unmatched_pdfs:
+        click.echo(f"Warning: {len(result.unmatched_pdfs)} PDFs matched no known doc_id:", err=True)
+        for pdf in result.unmatched_pdfs[:20]:
+            click.echo(f"  {pdf}", err=True)
+
+
+@tracking.command("eligibility-template")
+@click.option("--registry", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--out", "output", required=True, type=click.Path(dir_okay=False))
+def tracking_eligibility_template(registry: str, output: str) -> None:
+    """Write a full-text review CSV template for every retrieved, unassessed doc."""
+    from prisma.tracking.eligibility import write_template
+    from prisma.tracking.registry import Registry
+
+    reg = Registry.load(registry)
+    n = write_template(reg, output)
+    click.echo(f"Wrote {n} rows to {output}")
+
+
+@tracking.command("eligibility-apply")
+@click.option("--registry", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--in", "filled_path", required=True, type=click.Path(exists=True, dir_okay=False))
+def tracking_eligibility_apply(registry: str, filled_path: str) -> None:
+    """Fold a filled-in eligibility template back into the registry."""
+    from prisma.tracking.eligibility import apply_template
+    from prisma.tracking.registry import Registry
+
+    reg = Registry.load(registry)
+    applied, left_blank = apply_template(reg, filled_path)
+    reg.save(registry)
+    click.echo(f"Applied {applied} decisions to {registry}")
+    if left_blank:
+        click.echo(f"{len(left_blank)} rows still have no decision, left untouched.", err=True)
+
+
+@tracking.command("counts")
+@click.option("--dedup-meta", required=True, type=click.Path(exists=True, dir_okay=False),
+              help="<basename>-dedup-meta.json from `ingest dedup`.")
+@click.option("--registry", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--out", "output", required=True, type=click.Path(dir_okay=False))
+def tracking_counts(dedup_meta: str, registry: str, output: str) -> None:
+    """Derive a PRISMACounts JSON directly from the tracking registry."""
+    from dataclasses import asdict
+
+    from prisma.tracking.registry import Registry, compute_prisma_counts
+
+    with open(dedup_meta, encoding="utf-8") as f:
+        meta = json.load(f)
+    reg = Registry.load(registry)
+    counts = compute_prisma_counts(reg, meta)
+
+    out_path = Path(output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(asdict(counts), indent=2), encoding="utf-8")
+    click.echo(f"Wrote {out_path}")
 
 
 @main.command()

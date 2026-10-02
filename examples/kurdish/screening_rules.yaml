@@ -1,0 +1,40 @@
+# Title-abstract screening rules for the Kurdish example survey
+# (OpenAlex queries "Kurdish dialectology" and "Kurdish natural language
+# processing nlp"). See examples/README.md for the full walkthrough.
+#
+# This is a small test rule set. Adapt the patterns to your own review.
+
+name: kurdish
+description: >
+  Two-tier screening. Hard exclusion of Aramaic studies, followed by
+  double-positive inclusion (a Kurdish variety AND an NLP topic). A record
+  that matches only one of the two groups is kept as "maybe".
+
+exclusion:
+  - id: R-ARAMAIC-1
+    code: EC-ARAMAIC
+    description: Aramaic / Neo-Aramaic studies
+    pattern: '\b(neo-aramaic|aramaic)\b'
+    search_in: both
+
+inclusion:
+  require_all_of: [kurdish, nlp]
+
+  groups:
+    kurdish:
+      description: Kurdish language or one of its varieties
+      rules:
+        - id: I-KURDISH-1
+          code: IC-KURDISH
+          description: Kurdish, Kurmanji, Sorani, Hawrami/Gorani, Zaza, Laki, Bahdini
+          pattern: '\b(kurdish|kurmanji|kurmanjî|sorani|soranî|kobani|hawrami|hewrami|gorani|goranî|zaza|laki|lakî|bahdini)\b'
+          search_in: both
+
+    nlp:
+      description: Natural language processing topic
+      rules:
+        - id: I-NLP-1
+          code: IC-NLP
+          description: NLP task or method vocabulary
+          pattern: '\b(nlp|mt|lid|did|asr|tts|tokenize|tagging|tagger|parser|parsing|processing|translation|machine|automatic)\b'
+          search_in: both

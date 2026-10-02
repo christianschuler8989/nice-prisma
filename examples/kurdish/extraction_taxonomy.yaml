@@ -1,0 +1,52 @@
+# Full-text extraction taxonomy for the Kurdish example survey.
+# Companion to examples/kurdish/screening_rules.yaml.
+# Each pattern carries a label that becomes the extracted value.
+
+name: kurdish-extraction
+description: >
+  Extract Kurdish dialect/variety, NLP task, resource type, and script/orthography
+  from full-text PDFs.
+
+fields:
+  dialect_variety:
+    description: Kurdish dialect or variety studied
+    multi: true
+    patterns:
+      - { label: "Kurmanji",   pattern: 'kurmanji|kurmanci|northern\s*kurdish', priority: 10 }
+      - { label: "Sorani",     pattern: 'sorani|central\s*kurdish',             priority: 10 }
+      - { label: "Pehlewani",  pattern: 'pehlewani|southern\s*kurdish|kermanshahi|kalhori', priority: 10 }
+      - { label: "Zazaki",     pattern: 'zazaki|zaza(?:ki)?|dimli',             priority: 10 }
+      - { label: "Gorani",     pattern: 'gorani|hawrami',                      priority: 10 }
+      - { label: "Laki",       pattern: '\blaki\b',                            priority: 10 }
+
+  nlp_task:
+    description: NLP task addressed
+    multi: true
+    patterns:
+      - { label: "Machine translation",   pattern: 'machine\s*translation|\bmt\b' }
+      - { label: "POS tagging",           pattern: 'part[-\s]of[-\s]speech|\bpos\s*tagg' }
+      - { label: "Named entity recognition", pattern: 'named\s*entity|\bner\b' }
+      - { label: "Speech recognition",    pattern: 'speech\s*recognition|\basr\b' }
+      - { label: "Sentiment analysis",    pattern: 'sentiment\s*analysis|opinion\s*mining' }
+      - { label: "Text classification",   pattern: 'text\s*classification|document\s*classification' }
+      - { label: "Morphological analysis",pattern: 'morpholog(?:y|ical)\s*analys' }
+      - { label: "Language identification",pattern: 'language\s*identification|dialect\s*identification' }
+
+  resource_type:
+    description: Linguistic resource or dataset produced/used
+    multi: true
+    patterns:
+      - { label: "Corpus",       pattern: '\bcorpus\b|\bcorpora\b' }
+      - { label: "Treebank",     pattern: 'treebank' }
+      - { label: "Lexicon",      pattern: 'lexicon|word\s*list|dictionary' }
+      - { label: "Parallel data",pattern: 'parallel\s*(?:corpus|data|text)' }
+      - { label: "Annotated dataset", pattern: 'annotat(?:ed|ion)\s*dataset|gold\s*standard' }
+      - { label: "Word embeddings", pattern: 'word\s*embedding|word2vec|fasttext' }
+
+  script_orthography:
+    description: Writing system or orthography used for the Kurdish data
+    patterns:
+      - { label: "Arabic-based",  pattern: 'arabic[-\s]based\s*script|perso-arabic|sorani\s*script', priority: 8 }
+      - { label: "Latin-based",   pattern: 'latin[-\s]based\s*script|latin\s*alphabet|kurmanji\s*script', priority: 8 }
+      - { label: "Cyrillic",      pattern: 'cyrillic', priority: 7 }
+      - { label: "Transliteration", pattern: 'transliterat', priority: 5 }

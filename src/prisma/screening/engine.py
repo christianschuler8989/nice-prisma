@@ -11,7 +11,7 @@ Two-tier rule system:
            KPI" rule AND one "empirical method" rule). Configurable via
            `inclusion.require_all_of`.
 
-Rules are defined in YAML (see `examples/screening_rules.yaml`) so that any
+Rules are defined in YAML (see `examples/kurdish/screening_rules.yaml`) so that any
 domain can be encoded without changing code. Every decision is traceable to
 the specific rule(s) that fired.
 """
@@ -26,6 +26,7 @@ from typing import Any
 
 import yaml
 
+from prisma.ingest.identity import ensure_doc_id
 from prisma.ingest.ris_io import get_field, parse_ris
 
 
@@ -71,7 +72,7 @@ class RuleSet:
 
 @dataclass
 class ScreeningResult:
-    record_id: str
+    record_id: str  # doc_id (see prisma.ingest.identity), stable across stages
     title: str
     decision: Decision
     fired_exclusion: list[tuple[str, str]] = field(default_factory=list)
@@ -145,15 +146,39 @@ def screen_records(
     """Screen all records in a RIS file. Optionally write CSV outputs."""
     records = parse_ris(ris_path)
     results: list[ScreeningResult] = []
-    for i, rec in enumerate(records):
-        rid = get_field(rec, "DO") or get_field(rec, "ID") or f"rec-{i:05d}"
+    for rec in records:
+        _rec, doc_id = ensure_doc_id(rec)
         title = get_field(rec, "TI") or get_field(rec, "T1")
         abstract = get_field(rec, "AB")
-        results.append(screen_record(rid, title, abstract, ruleset))
+        results.append(screen_record(doc_id, title, abstract, ruleset))
 
     if output_dir:
         _write_outputs(results, Path(output_dir))
     return results
+
+
+def apply_to_registry(results: list[ScreeningResult], registry) -> None:
+    """Write each screening decision onto the matching `Registry` entry.
+
+    Imported lazily by callers that already depend on `prisma.tracking`
+    (the CLI) so that `prisma.screening` itself stays free of a hard
+    dependency on the tracking package for callers who only want the
+    screening CSVs.
+    """
+    from prisma.tracking.registry import DocEntry
+
+    for r in results:
+        registry.upsert(
+            DocEntry(
+                doc_id=r.record_id,
+                title=r.title,
+                screening={
+                    "decision": r.decision.value,
+                    "fired_exclusion": [rid for rid, _match in r.fired_exclusion],
+                    "missing_groups": r.missing_groups,
+                },
+            )
+        )
 
 
 def _write_outputs(results: list[ScreeningResult], output_dir: Path) -> None:

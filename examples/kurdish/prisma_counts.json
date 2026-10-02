@@ -1,0 +1,17 @@
+{
+  "identified_per_source": {
+    "openalex-dialectology": 50,
+    "openalex-nlp": 50
+  },
+  "deduplicated": 87,
+  "duplicates_removed": 13,
+  "screened_title_abstract": 87,
+  "excluded_title_abstract": 21,
+  "sought_for_retrieval": 66,
+  "not_retrieved": 62,
+  "assessed_full_text": 4,
+  "excluded_full_text": {
+    "Off-topic on full read": 1
+  },
+  "included": 3
+}

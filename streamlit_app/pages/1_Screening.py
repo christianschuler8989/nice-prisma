@@ -11,33 +11,34 @@ from prisma.ingest.ris_io import get_field, parse_ris
 from prisma.screening.engine import Decision, load_rules, screen_record
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-DEMO_RULES = REPO_ROOT / "examples" / "screening_rules_signal_kpi.yaml"
+DEMO_RULES = REPO_ROOT / "examples" / "kurdish" / "screening_rules.yaml"
 
+# Synthetic records written for this demo. They are not real publications.
 DEMO_RECORDS = [
     {
         "id": "doc-001",
-        "title": "Forecasting hotel demand in Spain with Google Trends data",
-        "abstract": "We use weekly search volume to forecast revenue and tourist arrivals using ARIMA-X.",
+        "title": "A part-of-speech tagger for Sorani Kurdish",
+        "abstract": "We train a statistical tagger on a hand-annotated corpus and report tagging accuracy.",
     },
     {
         "id": "doc-002",
-        "title": "COVID-19 case prediction using Google search queries",
-        "abstract": "Pandemic surveillance with online search data for hospital admissions.",
+        "title": "Machine translation between Kurmanji and Sorani",
+        "abstract": "A rule-based translation system for two Kurdish dialects, evaluated on news text.",
     },
     {
         "id": "doc-003",
-        "title": "A systematic review of social media analytics for marketing",
-        "abstract": "Bibliometric analysis of 200 papers on social media research.",
+        "title": "Verb morphology in the Hawrami of Paveh",
+        "abstract": "A descriptive account based on fieldwork recordings with twelve speakers.",
     },
     {
         "id": "doc-004",
-        "title": "Predicting stock returns with Twitter sentiment",
-        "abstract": "Empirical study using tweet volume and sentiment as predictors of S&P 500 returns. Random forest regression.",
+        "title": "Language contact between Neo-Aramaic and Kurdish in northern Iraq",
+        "abstract": "Shared phonological and lexical features in two neighbouring speech communities.",
     },
     {
         "id": "doc-005",
-        "title": "Macroeconomic forecasting in Latin America",
-        "abstract": "Traditional VAR model on quarterly GDP and inflation. No digital signals used.",
+        "title": "Rainfall variability in the Zagros mountains",
+        "abstract": "Station records from 1980 to 2010 show a declining trend in spring precipitation.",
     },
 ]
 
@@ -52,7 +53,7 @@ st.write(
 
 with st.sidebar:
     st.subheader("Inputs")
-    use_demo_rules = st.toggle("Use demo rules (Signal-KPI)", value=True)
+    use_demo_rules = st.toggle("Use demo rules (Kurdish example)", value=True)
     rules_file = (
         DEMO_RULES
         if use_demo_rules

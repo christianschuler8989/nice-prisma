@@ -1,35 +1,48 @@
 cff-version: 1.2.0
-title: "PRISMA: A Python Toolkit for Systematic Literature Reviews"
-message: "If you use this software in your research, please cite it as below."
+title: "nice-prisma, a service-friendly toolkit for PRISMA-based literature surveys"
+message: "If you use this software in your research, please cite it as below, together with the original toolkit listed under references."
 type: software
 authors:
-  - given-names: "Javier"
-    family-names: "Cuervo"
-    email: "javier.cuervo@proportione.com"
-    affiliation: "Universidade de Aveiro (DEGEIT, DBI) and Proportione, LDA"
-    orcid: "https://orcid.org/0009-0006-7134-2894"
-  - given-names: "Rui Pedro Figueiredo"
-    family-names: "Marques"
-    email: "ruimarques@ua.pt"
-    affiliation: "Universidade de Aveiro (ISCA-UA, GOVCOPP)"
-repository-code: "https://github.com/Proportione/prisma"
-url: "https://proportione.com/investigacion"
-doi: "10.5281/zenodo.19883809"
+  - given-names: "Christian"
+    family-names: "Schuler"
+    email: "christianschuler8989@gmail.com"
+    affiliation: "Saarland University & DFKI"
+    orcid: "https://orcid.org/0000-0002-2686-6350"
+repository-code: "https://github.com/christianschuler8989/nice-prisma"
+url: "https://github.com/christianschuler8989/nice-prisma"
 abstract: >
-  PRISMA is a modular Python toolkit for systematic literature reviews,
-  covering corpus ingestion (OpenAlex, RIS), cross-source deduplication,
-  title-abstract screening, full-text extraction with PyMuPDF, MMAT 2018
-  quality assessment, PRISMA 2020 flow diagrams, and bibliometric analysis
-  (cluster detection, keyword co-occurrence, VOSviewer integration). It
-  ships a Streamlit demo and a CLI for reproducible reviews.
+  nice-prisma is a Python toolkit for PRISMA 2020 literature surveys. It
+  covers polite corpus ingestion from OpenAlex with a local page cache,
+  cross-source deduplication, stable document identity and tracking across
+  all survey stages, title-abstract screening, full-text extraction with
+  PyMuPDF, MMAT 2018 quality assessment, PRISMA 2020 flow diagrams, and
+  bibliometric analysis. It is a fork of the PRISMA toolkit by Proportione.
 keywords:
   - systematic literature review
   - PRISMA 2020
   - MMAT 2018
+  - OpenAlex
   - bibliometrics
-  - meta-analysis
   - research synthesis
   - reproducible research
 license: MIT
-version: 0.1.0
-date-released: "2026-04-29"
+version: 0.2.0
+references:
+  - type: software
+    title: "PRISMA: A Python Toolkit for Systematic Literature Reviews"
+    authors:
+      - given-names: "Javier"
+        family-names: "Cuervo"
+        email: "javier.cuervo@proportione.com"
+        affiliation: "Universidade de Aveiro (DEGEIT, DBI) and Proportione, LDA"
+        orcid: "https://orcid.org/0009-0006-7134-2894"
+      - given-names: "Rui Pedro Figueiredo"
+        family-names: "Marques"
+        email: "ruimarques@ua.pt"
+        affiliation: "Universidade de Aveiro (ISCA-UA, GOVCOPP)"
+    repository-code: "https://github.com/Proportione/prisma"
+    url: "https://proportione.com/investigacion"
+    doi: "10.5281/zenodo.19883809"
+    version: 0.1.0
+    date-released: "2026-04-29"
+    license: MIT

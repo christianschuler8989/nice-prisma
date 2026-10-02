@@ -33,9 +33,19 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from prisma import __version__
+from prisma.ingest.identity import compute_doc_id
 from prisma.ingest.ris_io import normalize_doi
 
 OPENALEX_WORKS = "https://api.openalex.org/works"
+
+# Largest page size this client will request. nice-prisma never asks a
+# service for more than the value the service recommends.
+MAX_PER_PAGE = 100
+
+# Version of the on-disk cache layout. Since format 2, `fetched` and `cursor`
+# in meta.json describe what is stored in records.jsonl (records stored, and
+# the cursor of the next page that has not been requested yet).
+CACHE_FORMAT = 2
 
 # A good default for screening tables: enough to build the corpus and
 # convert to RIS without pulling every nested field OpenAlex can return.
@@ -101,7 +111,7 @@ def make_session(mailto: str, api_key: str | None = None) -> requests.Session:
     session.mount("https://", adapter)
 
     headers = {
-        "User-Agent": f"proportione-prisma/{__version__} (mailto:{mailto})",
+        "User-Agent": f"nice-prisma/{__version__} (mailto:{mailto})",
         "Accept": "application/json",
     }
     if api_key:
@@ -162,6 +172,13 @@ def _read_jsonl(path: Path) -> Iterator[dict[str, Any]]:
                 yield json.loads(line)
 
 
+def _count_jsonl(path: Path) -> int:
+    if not path.exists():
+        return 0
+    with path.open(encoding="utf-8") as handle:
+        return sum(1 for line in handle if line.strip())
+
+
 def _load_meta(meta_path: Path) -> dict[str, Any] | None:
     if not meta_path.exists():
         return None
@@ -195,8 +212,7 @@ def openalex_search(
         query: full-text search expression (passed to `search`).
         mailto: contact email; required for the polite pool and sent both
             as a query parameter and in the User-Agent header.
-        per_page: 1..200 (OpenAlex's hard limit); the recommended default
-            is 100.
+        per_page: 1..100 (`MAX_PER_PAGE`); larger values are refused.
         max_records: stop after this many records (None = all).
         filters: OpenAlex filters, e.g. `{"from_publication_date": "2015-01-01"}`.
             OR-values within one filter (`"article|preprint"`) are capped
@@ -209,9 +225,10 @@ def openalex_search(
             repeated scheduled runs do not synchronize.
         cache_dir: when given, every fetched page is appended to
             `<cache_dir>/<query_id>/records.jsonl` immediately, and a
-            `meta.json` sidecar records the query spec and cursor. A
-            completed query is served from the cache without hitting the
-            network; an interrupted one resumes from its last cursor.
+            `meta.json` sidecar records the query spec and cursor. Stored
+            records are always served first. A completed query never hits
+            the network, and an unfinished one (interrupted, or stopped by
+            `max_records`) continues with the first page it does not hold.
         query_id: cache key; derived from the query/filters/select/per_page
             when omitted, so identical searches share a cache directory.
         force: ignore an existing cache and re-fetch from scratch.
@@ -220,8 +237,8 @@ def openalex_search(
         raise ValueError("query must not be empty")
     if not mailto.strip():
         raise ValueError("mailto must not be empty")
-    if not 1 <= per_page <= 200:
-        raise ValueError("per_page must be between 1 and 200")
+    if not 1 <= per_page <= MAX_PER_PAGE:
+        raise ValueError(f"per_page must be between 1 and {MAX_PER_PAGE}")
     if filters:
         _validate_filters(filters)
 
@@ -229,6 +246,7 @@ def openalex_search(
     records_path: Path | None = None
     meta_path: Path | None = None
     meta: dict[str, Any] | None = None
+    cached = 0  # records handed out from the cache before any request is sent
 
     if cache_dir is not None:
         resolved_id = query_id or _canonical_query_id(query, filters, select, per_page)
@@ -237,20 +255,42 @@ def openalex_search(
         meta_path = cache_path / "meta.json"
         meta = None if force else _load_meta(meta_path)
 
-        if meta is not None and meta.get("status") == "complete":
-            logger.info("Serving %d cached records for query_id=%s", meta["fetched"], resolved_id)
-            fetched = 0
-            for record in _read_jsonl(records_path):
-                yield record
-                fetched += 1
-                if max_records is not None and fetched >= max_records:
-                    return
-            return
-
         if force and records_path.exists():
             records_path.unlink()
 
-        if meta is None:
+        if meta is not None:
+            stored = _count_jsonl(records_path)
+            complete = meta.get("status") == "complete"
+
+            # Refuse an unusable entry before the first record is handed out.
+            if not complete and meta.get("cache_format") != CACHE_FORMAT:
+                # Entries from before format 2 do not record where the next
+                # page starts, so they can be read but not continued.
+                if stored and (max_records is None or max_records > stored):
+                    raise OpenAlexError(
+                        f"cache entry {resolved_id!r} was written by an older version and "
+                        f"cannot be resumed. It holds {stored} records. Rerun with --max "
+                        f"{stored} or less to use them, or with --force to fetch the "
+                        "search again."
+                    )
+                if not stored:
+                    meta.update({"cache_format": CACHE_FORMAT, "cursor": "*", "fetched": 0})
+            elif not complete and stored != meta["fetched"]:
+                raise OpenAlexError(
+                    f"cache entry {resolved_id!r} is inconsistent ({stored} records stored, "
+                    f"{meta['fetched']} expected). Rerun with --force to fetch the search again."
+                )
+
+            # Whatever is already stored is served first, so a repeated or
+            # resumed search never requests a page it already holds.
+            logger.info("Serving %d cached records for query_id=%s", stored, resolved_id)
+            for cached, record in enumerate(_read_jsonl(records_path), start=1):
+                yield record
+                if max_records is not None and cached >= max_records:
+                    return
+            if complete:
+                return
+        else:
             meta = {
                 "query_id": resolved_id,
                 "query": query,
@@ -258,6 +298,7 @@ def openalex_search(
                 "select": select,
                 "per_page": per_page,
                 "script_version": __version__,
+                "cache_format": CACHE_FORMAT,
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "cursor": "*",
                 "fetched": 0,
@@ -266,7 +307,7 @@ def openalex_search(
             _write_meta(meta_path, meta)
 
     cursor = meta["cursor"] if meta else "*"
-    fetched = meta["fetched"] if meta else 0
+    yielded = cached
 
     session = make_session(mailto, api_key=api_key)
     params: dict[str, str | int] = {
@@ -312,30 +353,28 @@ def openalex_search(
             )
 
             results = payload.get("results", [])
-            if results and records_path is not None:
-                _append_jsonl(records_path, results)
+            next_cursor = payload.get("meta", {}).get("next_cursor") if results else None
 
-            for work in results:
-                yield work
-                fetched += 1
-                if max_records is not None and fetched >= max_records:
-                    if meta_path is not None:
-                        meta["fetched"] = fetched
-                        meta["cursor"] = cursor
-                        meta["status"] = "in_progress"
-                        _write_meta(meta_path, meta)
-                    return
-
-            cursor = payload.get("meta", {}).get("next_cursor")
-
+            # The cache state describes what is stored on disk. It is
+            # written before any record of this page is handed out, so it
+            # stays correct when `max_records` stops the search mid-page.
             if meta_path is not None:
-                meta["fetched"] = fetched
-                meta["cursor"] = cursor or ""
-                meta["status"] = "complete" if not cursor else "in_progress"
+                if results:
+                    _append_jsonl(records_path, results)
+                meta["fetched"] += len(results)
+                meta["cursor"] = next_cursor or ""
+                meta["status"] = "complete" if not next_cursor else "in_progress"
                 meta["updated_at"] = datetime.now(timezone.utc).isoformat()
                 _write_meta(meta_path, meta)
 
-            if not results or not cursor:
+            for work in results:
+                yield work
+                yielded += 1
+                if max_records is not None and yielded >= max_records:
+                    return
+
+            cursor = next_cursor
+            if not cursor:
                 break
 
             time.sleep(request_pause + random.uniform(0, 0.15))
@@ -375,8 +414,9 @@ def work_to_ris(work: dict[str, Any]) -> str:
     src = primary.get("source") or {}
     journal = src.get("display_name") or ""
     ris_type = _TYPE_TO_RIS.get(work.get("type") or "", "GEN")
+    doc_id = compute_doc_id(doi, title, year)
 
-    lines = [f"TY  - {ris_type}", f"TI  - {title}"]
+    lines = [f"TY  - {ris_type}", f"ID  - {doc_id}", f"TI  - {title}"]
     for au in work.get("authorships", [])[:50]:
         name = (au.get("author") or {}).get("display_name")
         if name:

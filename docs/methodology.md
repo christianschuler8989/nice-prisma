@@ -1,6 +1,6 @@
 # Methodology
 
-PRISMA wraps four well-established methodological standards into one Python package.
+nice-prisma wraps four well-established methodological standards into one Python package. This selection was made by the original PRISMA toolkit by Proportione, which nice-prisma is forked from.
 
 ## Reporting standard — PRISMA 2020
 
@@ -62,12 +62,15 @@ follows the strategic-diagram framework of Callon et al. (1991).
 
 ## Reproducibility checklist
 
-When you publish results obtained with PRISMA, share:
+When you publish results obtained with nice-prisma, share the following.
 
-- The input corpora (or queries used to build them).
+- The queries used to build the corpora, together with the cached raw
+  responses (`data/library/openalex/<query_id>/`, which records the query
+  spec and retrieval timestamps).
 - The exact rule-set / taxonomy YAML files used (commit hash if from a fork).
-- The version of `proportione-prisma` (`prisma --version`).
-- Any manual decisions logged on top of automated outputs.
+- The version of `nice-prisma` (`prisma --version`).
+- The tracking registry (`corpus-registry.jsonl`) and the filled-in
+  eligibility sheets, which hold every automated and manual decision.
 
 Together, these inputs allow a third party to re-execute the pipeline and
 obtain the same outputs.

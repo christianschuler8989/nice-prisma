@@ -52,25 +52,16 @@ htmlcov/
 
 # === RESEARCH DATA POLICY ===
 # This repo MUST NOT contain copyrighted material or private data.
-# Reviewers/users provide their own corpora; only example_corpus.ris (open access) ships.
+# Everything a run downloads or produces lives under data/ and stays local.
+# Layout documented in data/README.md, which is the only tracked file there.
+data/*
+!data/README.md
 
-# PDFs (publisher copyright — never commit)
+# PDFs (publisher copyright, never commit), wherever they end up
 *.pdf
-data/raw/
-data/pdfs/
-data/full-texts/
 
-# Bulk corpora (reviewers bring their own RIS)
-data/scopus-*.ris
-data/openalex-*.ris
-data/corpus-*.csv
-data/corpus-*.ris
-
-# Working outputs
-data/extracted-*.csv
-data/screened-*.csv
-data/mmat-*.csv
-reports/
+# OpenAlex page cache when --cache-dir is not given (created next to --out)
+.ingest-cache/
 
 # Streamlit user uploads
 streamlit_app/data/user-*
